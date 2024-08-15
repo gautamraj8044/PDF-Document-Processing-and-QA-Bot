@@ -1,5 +1,3 @@
-
-```markdown
 # PDF Document Processing and QA Bot
 
 This project provides a Flask-based web service for uploading PDF documents, extracting text using OCR, and setting up a question-answering (QA) system using language models and embeddings. The service processes uploaded PDFs, stores embeddings in a Chroma database, and allows users to query the processed documents.
