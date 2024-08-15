@@ -25,7 +25,7 @@ This project provides a Flask-based web service for uploading PDF documents, ext
 
 2. **Navigate to the project directory:**
    ```bash
-   cd repositoryname
+   cd Chat-Bot
    ```
 
 3. **Install the required Python packages:**
