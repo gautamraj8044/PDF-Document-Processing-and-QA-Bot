@@ -94,5 +94,4 @@ Feel free to submit issues or pull requests. Please follow the project's coding 
 
 ## Contact
 
-For any questions or issues, please contact [gautamraj8044@gmail.com].
-
+For any questions or issues, please contact [gautamraj8044@gmail.com]
