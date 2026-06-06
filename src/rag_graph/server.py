@@ -243,19 +243,24 @@ def create_app(runtime: RagRuntime) -> FastAPI:
         request: QueryRequest,
         current_user: Annotated[dict, Depends(get_current_user)],
     ) -> QueryResponse:
+        import uuid
         question = request.question.strip()
 
+        # Auto-create session if not provided
+        session_id = request.session_id or f"{current_user['sub']}:{uuid.uuid4()}"
+
         # Enforce session belongs to this user
-        if not request.session_id.startswith(current_user["sub"]):
+        if not session_id.startswith(current_user["sub"]):
             raise HTTPException(status_code=403, detail="Session does not belong to you.")
 
         try:
-            result = runtime.query(question, session_id=request.session_id)
+            result = runtime.query(question, session_id=session_id)
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return QueryResponse(
             answer=result["answer"],
+            session_id=session_id,
             file_name=result["file_name"],
             document_count=result["document_count"],
             sources=_summarize_documents(result["retrieved_docs"]),
