@@ -170,12 +170,22 @@ class RagRuntime:
 
 
 def create_app(runtime: RagRuntime) -> FastAPI:
-    app = FastAPI(title="Basic RAG PDF API")
+    app = FastAPI(
+        title="Gemini RAG Graph",
+        description="A LangGraph-powered RAG API with Gemini, Qdrant, PostgreSQL checkpointing, and JWT authentication.",
+        version="0.1.0",
+    )
     app.state.rag_runtime = runtime
 
     # ── Auth routes ───────────────────────────────────────────────────────────
 
-    @app.post("/auth/signup", response_model=UserResponse)
+    @app.post(
+        "/auth/signup",
+        response_model=UserResponse,
+        tags=["Auth"],
+        summary="Create a new account",
+        responses={400: {"description": "Email already registered"}, 503: {"description": "User store unavailable"}},
+    )
     def signup(request: SignupRequest) -> UserResponse:
         if runtime._user_store is None:
             raise HTTPException(status_code=503, detail="User store not available.")
@@ -188,9 +198,15 @@ def create_app(runtime: RagRuntime) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc))
         return UserResponse(id=user.id, email=user.email)
 
-    @app.post("/auth/login", response_model=LoginResponse)
+    @app.post(
+        "/auth/login",
+        response_model=LoginResponse,
+        tags=["Auth"],
+        summary="Login with email and password",
+        description="Accepts OAuth2 form with `username` (your email) and `password`. Returns a JWT access token.",
+        responses={401: {"description": "Invalid credentials"}, 503: {"description": "User store unavailable"}},
+    )
     def login(form: OAuth2PasswordRequestForm = Depends()) -> LoginResponse:
-        """Standard OAuth2 form — username field = email."""
         if runtime._user_store is None:
             raise HTTPException(status_code=503, detail="User store not available.")
 
@@ -201,13 +217,23 @@ def create_app(runtime: RagRuntime) -> FastAPI:
         token = create_access_token(user_id=user.id, email=user.email)
         return LoginResponse(access_token=token, email=user.email)
 
-    @app.get("/auth/me", response_model=UserResponse)
+    @app.get(
+        "/auth/me",
+        response_model=UserResponse,
+        tags=["Auth"],
+        summary="Get current user profile",
+    )
     def me(current_user: Annotated[dict, Depends(get_current_user)]) -> UserResponse:
         return UserResponse(id=current_user["sub"], email=current_user["email"])
 
-    # ── Existing routes — now protected ───────────────────────────────────────
+    # ── Document routes ───────────────────────────────────────────────────────
 
-    @app.get("/health", response_model=HealthResponse)
+    @app.get(
+        "/health",
+        response_model=HealthResponse,
+        tags=["Documents"],
+        summary="Check server and document status",
+    )
     def health() -> HealthResponse:
         return HealthResponse(
             status="ok",
@@ -215,15 +241,13 @@ def create_app(runtime: RagRuntime) -> FastAPI:
             document_count=runtime.document_count,
         )
 
-    @app.get("/session")
-    def new_session(
-        current_user: Annotated[dict, Depends(get_current_user)]
-    ) -> dict:
-        import uuid
-        # Prefix session with user_id so sessions are isolated per user
-        return {"session_id": f"{current_user['sub']}:{uuid.uuid4()}"}
-
-    @app.post("/upload", response_model=UploadResponse)
+    @app.post(
+        "/upload",
+        response_model=UploadResponse,
+        tags=["Documents"],
+        summary="Upload a PDF for querying",
+        responses={400: {"description": "Invalid or non-PDF file"}},
+    )
     async def upload(
         file: UploadFile = File(...),
         current_user: Annotated[dict, Depends(get_current_user)] = None,
@@ -238,7 +262,28 @@ def create_app(runtime: RagRuntime) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return UploadResponse(status="ok", **result)
 
-    @app.post("/query", response_model=QueryResponse)
+    # ── Conversation routes ───────────────────────────────────────────────────
+
+    @app.get(
+        "/session",
+        tags=["Conversation"],
+        summary="Create a new conversation session",
+        description="Returns a session ID scoped to the authenticated user. Use it in `/query` to maintain conversation history.",
+    )
+    def new_session(
+        current_user: Annotated[dict, Depends(get_current_user)]
+    ) -> dict:
+        import uuid
+        return {"session_id": f"{current_user['sub']}:{uuid.uuid4()}"}
+
+    @app.post(
+        "/query",
+        response_model=QueryResponse,
+        tags=["Conversation"],
+        summary="Ask a question against the uploaded PDF",
+        description="Accepts a question and optional session_id. If no session_id is provided, one is auto-created and returned. The router decides whether to answer from the PDF (RAG) or general knowledge.",
+        responses={400: {"description": "No PDF uploaded or invalid question"}, 403: {"description": "Session does not belong to user"}},
+    )
     def query(
         request: QueryRequest,
         current_user: Annotated[dict, Depends(get_current_user)],
@@ -246,10 +291,7 @@ def create_app(runtime: RagRuntime) -> FastAPI:
         import uuid
         question = request.question.strip()
 
-        # Auto-create session if not provided
         session_id = request.session_id or f"{current_user['sub']}:{uuid.uuid4()}"
-
-        # Enforce session belongs to this user
         if not session_id.startswith(current_user["sub"]):
             raise HTTPException(status_code=403, detail="Session does not belong to you.")
 
@@ -266,7 +308,12 @@ def create_app(runtime: RagRuntime) -> FastAPI:
             sources=_summarize_documents(result["retrieved_docs"]),
         )
 
-    @app.get("/history/{session_id}")
+    @app.get(
+        "/history/{session_id}",
+        tags=["Conversation"],
+        summary="View conversation history for a session",
+        responses={403: {"description": "Session does not belong to user"}, 404: {"description": "Session not found"}, 503: {"description": "Checkpointer not configured"}},
+    )
     def get_history(
         session_id: str,
         current_user: Annotated[dict, Depends(get_current_user)],
