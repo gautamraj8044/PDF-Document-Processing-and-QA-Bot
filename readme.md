@@ -1,104 +1,89 @@
 # Gemini RAG Graph
 
-A retrieval-augmented generation API built with LangGraph, Gemini, Qdrant, and PostgreSQL.
+A LangGraph-powered RAG API with Gemini embeddings, Qdrant vector storage, PostgreSQL checkpointing, and JWT authentication.
 
-## What it does
+## Stack
 
-1. Uploads a PDF and extracts its text.
-2. Splits the text into chunks.
-3. Embeds the chunks with Gemini embeddings.
-4. Stores the chunks in Qdrant.
-5. Routes queries between RAG (PDF-specific) and general conversation.
-6. Persists conversation history via PostgreSQL checkpointing.
-7. Authenticates users with JWT bearer tokens.
+- **LLM** — Google Gemini (configurable model)
+- **Orchestration** — LangGraph state machine with routing
+- **Vector store** — Qdrant (cloud or local)
+- **Conversation memory** — PostgreSQL via `langgraph-checkpoint-postgres`
+- **Auth** — JWT with bcrypt, user store in PostgreSQL
+- **API** — FastAPI with auto-generated Swagger docs
 
-## Setup
-
-### Prerequisites
-
-- Python 3.10+
-- PostgreSQL 16 (for conversation checkpointing)
-- A Qdrant instance (cloud or local)
-
-### Install
+## Quick start
 
 ```bash
 pip install -e .
-```
-
-### Configure
-
-```bash
 copy .env.example .env
 ```
 
-Edit `.env` with your keys:
+Edit `.env` with your Gemini API key and Qdrant credentials.
 
-| Variable | Description |
-|---|---|
-| `GEMINI_API_KEY` | Google Gemini API key |
-| `QDRANT_URL` | Qdrant cluster URL |
-| `QDRANT_API_KEY` | Qdrant API key |
-| `POSTGRES_URL` | PostgreSQL connection string |
-
-### Docker (optional)
+### Docker (includes PostgreSQL)
 
 ```bash
 docker compose up --build
 ```
 
-This starts both the API and a PostgreSQL instance with automatic checkpointing.
+## Usage
 
-## API mode
-
-Run the server:
+### 1. Start the server
 
 ```bash
 rag-graph-api
 ```
 
-Open the docs:
+Open http://localhost:8000/docs
+
+### 2. Auth flow
+
+| Step | Endpoint | Body |
+|---|---|---|
+| Sign up | `POST /auth/signup` | `{"email": "...", "password": "..."}` |
+| Log in | `POST /auth/login` | Form: `username` (email), `password` |
+| Get profile | `GET /auth/me` | Bearer token |
+
+After login, paste the `access_token` in Swagger's **Authorize** button.
+
+### 3. Query flow
 
 ```
-http://localhost:8000/docs
+GET /session              → get a session_id
+POST /upload (PDF file)   → upload a document
+POST /query               → ask a question with session_id
+GET /history/{session_id} → view conversation history
 ```
 
-### Auth flow
-
-1. **Sign up** — `POST /auth/signup` with `{"email": "...", "password": "..."}`
-2. **Log in** — `POST /auth/login` with form fields `username` (your email) and `password`
-3. Click **Authorize** in Swagger and paste the returned token
-4. All other endpoints now require a valid Bearer token
-
-### Usage
-
-Create a new session:
-
-```
-GET /session
-```
-
-Upload a PDF:
-
-```
-POST /upload  (multipart/form-data, file field)
-```
-
-Query with a session:
+Query request:
 
 ```json
-{"question": "What does this PDF say?", "session_id": "<id from /session>"}
+{
+  "question": "What does this PDF say?",
+  "session_id": "<uuid>:<uuid>"
+}
 ```
 
-Query history is persisted per session in PostgreSQL.
+## Environment
 
-## Graph shape
+Key variables in `.env`:
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | — | Google Gemini API key |
+| `GEMINI_MODEL` | `gemini-1.5-pro` | Chat model |
+| `GEMINI_EMBEDDING_MODEL` | `models/embedding-001` | Embedding model |
+| `QDRANT_URL` | (built-in) | Qdrant cluster URL |
+| `QDRANT_COLLECTION_NAME` | `rag_graph_documents` | Collection for document chunks |
+| `POSTGRES_URL` | — | PostgreSQL connection string |
+| `JWT_SECRET_KEY` | `change-me-in-production` | Token signing secret |
+| `RAG_GRAPH_TOP_K` | `3` | Retrieved document chunks per query |
+
+## Graph
 
 ```
-START -> router -> retrieve -> rag_generate -> END
-               -> general_generate --------> END
+START → router ──→ retrieve ──→ rag_generate ──→ END
+               └─→ general_generate ──────────→ END
 ```
 
-The router node decides whether to use RAG (PDF context) or general knowledge based on the user message.
-
-
+The **router** decides whether the question relates to the uploaded PDF (RAG path) or is general conversation. History is persisted via PostgreSQL checkpointing.
