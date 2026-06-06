@@ -1,95 +1,76 @@
-# PDF Document Processing and QA Bot
+# Gemini RAG Graph
 
-This project provides a Flask-based web service for uploading PDF documents, extracting text using OCR, and setting up a question-answering (QA) system using language models and embeddings. The service processes uploaded PDFs, stores embeddings in a Chroma database, and allows users to query the processed documents.
+This project is a minimal retrieval-augmented generation example built with LangGraph and Gemini.
 
-## Features
+## What it does
 
-- **PDF Upload**: Upload PDF documents through a REST API endpoint.
-- **Text Extraction**: Extract text from PDF files using PaddleOCR.
-- **Text Splitting**: Split extracted text into manageable chunks.
-- **Embedding**: Convert text chunks into embeddings using HuggingFace's model.
-- **Database Storage**: Store embeddings in a Chroma vector database.
-- **Question Answering**: Query the processed documents using a custom QA chain.
+1. Uploads a PDF and extracts its text.
+2. Splits the text into chunks.
+3. Embeds the chunks with Gemini embeddings.
+4. Stores the chunks in Qdrant.
+5. Retrieves the most relevant chunks for a question.
+6. Generates an answer with a LangGraph workflow.
 
-## Prerequisites
+In API mode, you upload a PDF first and then query that uploaded file. The indexed chunks live in Qdrant instead of process memory, so the vector data survives server restarts.
 
-- Python 3.7 or higher
-- Required Python packages (see `requirements.txt`)
+## Setup
 
-## Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/gautamraj8044/PDF-Document-Processing-and-QA-Bot
-   ```
-
-2. **Navigate to the project directory:**
-   ```bash
-   cd Chat-Bot
-   ```
-
-3. **Install the required Python packages:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-## Configuration
-
-1. **Set up Poppler**: Download and install Poppler, and update the `poppler_path` variable in the code to point to your Poppler installation directory.
-
-2. **Configure Model Paths**: Update the `local_llm` variable with the path to your local language model file.
-
-## Running the Application
-
-1. **Start the Flask server:**
-   ```bash
-   python app.py
-   ```
-
-2. **Access the API:**
-   - **Upload a PDF**: POST request to `/upload` with a file attachment.
-   - **Ask a Question**: POST request to `/ask` with the question in the form data.
-
-## API Endpoints
-
-### Upload PDF
-
-- **Endpoint**: `/upload`
-- **Method**: POST
-- **Request**: Form-data with a file attachment.
-- **Response**: JSON message indicating the status of the upload and processing.
-
-### Ask Question
-
-- **Endpoint**: `/ask`
-- **Method**: POST
-- **Request**: Form-data with the key `query` containing the question.
-- **Response**: JSON with the answer to the question.
-
-## Example Usage
-
-### Upload a PDF
+Install dependencies:
 
 ```bash
-curl -X POST http://localhost:5000/upload -F "file=@path_to_your_pdf.pdf"
+pip install -e .
 ```
 
-### Ask a Question
+Set your API key:
 
 ```bash
-curl -X POST http://localhost:5000/ask -F "query=What is the main topic of the document?"
+copy .env.example .env
 ```
 
+Edit `.env` and add your `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
 
+This repo is configured to use the Qdrant Cloud cluster at:
 
-## License
+```text
+https://2468b96d-f0ae-4d97-a440-74b23e10aa08.us-east-1-1.aws.cloud.qdrant.io:6333
+```
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Set `QDRANT_API_KEY` in `.env` for that cluster. If you point to a different deployment, keep the same `:6333` REST API port unless your Qdrant setup uses something else.
 
-## Contributing
+## API mode
 
-Feel free to submit issues or pull requests. Please follow the project's coding style and guidelines.
+If you want a simple upload-and-query API, run the server:
 
-## Contact
+```bash
+basic-rag-api
+```
 
-For any questions or issues, please contact [gautamraj8044@gmail.com]
+Then open the built-in docs page in your browser:
+
+```bash
+http://localhost:8000/docs
+```
+
+Use `POST /upload` to choose a PDF file. The upload body is `multipart/form-data` with a `file` field. Then use `POST /query` with JSON like:
+
+```json
+{"question":"What does this PDF say?"}
+```
+
+If you prefer PowerShell for querying:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/query `
+  -ContentType "application/json" `
+  -Body (@{ question = "What does this PDF say?" } | ConvertTo-Json)
+```
+
+Uploading a new PDF replaces the active document set for queries.
+
+## Graph shape
+
+The LangGraph workflow is intentionally small:
+
+`START -> retrieve -> generate -> END`
+
+That makes it easy to extend later with query rewriting, grading, memory, or tool use.
