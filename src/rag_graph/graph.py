@@ -63,7 +63,7 @@ def build_rag_graph(
 ):
     model_name = model_name or os.getenv("GEMINI_MODEL", DEFAULT_CHAT_MODEL)
     embedding_model = embedding_model or os.getenv("GEMINI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-    top_k = top_k if top_k is not None else int(os.getenv("BASIC_RAG_TOP_K", str(DEFAULT_TOP_K)))
+    top_k = top_k if top_k is not None else int(os.getenv("RAG_GRAPH_TOP_K", str(DEFAULT_TOP_K)))
     api_key = resolve_google_api_key(google_api_key)
 
     if vector_store is None and documents is not None:

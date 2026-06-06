@@ -44,7 +44,7 @@ class RagRuntime:
             "GEMINI_EMBEDDING_MODEL",
             DEFAULT_EMBEDDING_MODEL,
         )
-        self._top_k = top_k if top_k is not None else int(os.getenv("BASIC_RAG_TOP_K", str(DEFAULT_TOP_K)))
+        self._top_k = top_k if top_k is not None else int(os.getenv("RAG_GRAPH_TOP_K", str(DEFAULT_TOP_K)))
         self._google_api_key = resolve_google_api_key(google_api_key)
         self._qdrant_url = resolve_qdrant_url(qdrant_url)
         self._qdrant_api_key = resolve_qdrant_api_key(qdrant_api_key)
@@ -228,13 +228,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Basic RAG PDF API server.")
     parser.add_argument(
         "--host",
-        default=os.getenv("BASIC_RAG_API_HOST", DEFAULT_API_HOST),
+        default=os.getenv("RAG_GRAPH_API_HOST", DEFAULT_API_HOST),
         help="Host interface to bind the API server to.",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv("BASIC_RAG_API_PORT", str(DEFAULT_API_PORT))),
+        default=int(os.getenv("RAG_GRAPH_API_PORT", str(DEFAULT_API_PORT))),
         help="Port to bind the API server to.",
     )
     parser.add_argument(
@@ -250,7 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--top-k",
         type=int,
-        default=int(os.getenv("BASIC_RAG_TOP_K", str(DEFAULT_TOP_K))),
+        default=int(os.getenv("RAG_GRAPH_TOP_K", str(DEFAULT_TOP_K))),
         help="Number of chunks to retrieve for each question.",
     )
     parser.add_argument(

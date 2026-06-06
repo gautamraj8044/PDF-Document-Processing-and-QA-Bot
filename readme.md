@@ -42,7 +42,7 @@ Set `QDRANT_API_KEY` in `.env` for that cluster. If you point to a different dep
 If you want a simple upload-and-query API, run the server:
 
 ```bash
-basic-rag-api
+rag-graph-api
 ```
 
 Then open the built-in docs page in your browser:

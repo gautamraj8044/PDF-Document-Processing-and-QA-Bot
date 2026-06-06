@@ -9,7 +9,7 @@ DEFAULT_TOP_K = 3
 DEFAULT_API_HOST = "0.0.0.0"
 DEFAULT_API_PORT = 8000
 DEFAULT_QDRANT_URL = "https://2468b96d-f0ae--a440-74b23e10aa08.us-east-1-1.aws.cloud.qdrant.io:6333"
-DEFAULT_QDRANT_COLLECTION_NAME = "basic_rag_documents"
+DEFAULT_QDRANT_COLLECTION_NAME = "rag_graph_documents"
 
 
 def _normalize_qdrant_url(raw_url: str) -> str:

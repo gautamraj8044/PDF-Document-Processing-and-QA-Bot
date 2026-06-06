@@ -19,4 +19,4 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["basic-rag-api", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["rag-graph-api", "--host", "0.0.0.0", "--port", "8000"]

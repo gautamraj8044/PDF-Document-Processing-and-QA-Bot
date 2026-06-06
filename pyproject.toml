@@ -23,8 +23,8 @@ dependencies = [
 ]
 
 [project.scripts]
-basic-rag = "basic_rag.cli:main"
-basic-rag-api = "basic_rag.server:main"
+rag-graph = "rag_graph.cli:main"
+rag-graph-api = "rag_graph.server:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
