@@ -1,6 +1,6 @@
 # Gemini RAG Graph
 
-This project is a minimal retrieval-augmented generation example built with LangGraph and Gemini.
+A retrieval-augmented generation API built with LangGraph, Gemini, Qdrant, and PostgreSQL.
 
 ## What it does
 
@@ -8,69 +8,95 @@ This project is a minimal retrieval-augmented generation example built with Lang
 2. Splits the text into chunks.
 3. Embeds the chunks with Gemini embeddings.
 4. Stores the chunks in Qdrant.
-5. Retrieves the most relevant chunks for a question.
-6. Generates an answer with a LangGraph workflow.
-
-In API mode, you upload a PDF first and then query that uploaded file. The indexed chunks live in Qdrant instead of process memory, so the vector data survives server restarts.
+5. Routes queries between RAG (PDF-specific) and general conversation.
+6. Persists conversation history via PostgreSQL checkpointing.
+7. Authenticates users with JWT bearer tokens.
 
 ## Setup
 
-Install dependencies:
+### Prerequisites
+
+- Python 3.10+
+- PostgreSQL 16 (for conversation checkpointing)
+- A Qdrant instance (cloud or local)
+
+### Install
 
 ```bash
 pip install -e .
 ```
 
-Set your API key:
+### Configure
 
 ```bash
 copy .env.example .env
 ```
 
-Edit `.env` and add your `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
+Edit `.env` with your keys:
 
-This repo is configured to use the Qdrant Cloud cluster at:
+| Variable | Description |
+|---|---|
+| `GEMINI_API_KEY` | Google Gemini API key |
+| `QDRANT_URL` | Qdrant cluster URL |
+| `QDRANT_API_KEY` | Qdrant API key |
+| `POSTGRES_URL` | PostgreSQL connection string |
 
-```text
-https://2468b96d-f0ae-4d97-a440-74b23e10aa08.us-east-1-1.aws.cloud.qdrant.io:6333
+### Docker (optional)
+
+```bash
+docker compose up --build
 ```
 
-Set `QDRANT_API_KEY` in `.env` for that cluster. If you point to a different deployment, keep the same `:6333` REST API port unless your Qdrant setup uses something else.
+This starts both the API and a PostgreSQL instance with automatic checkpointing.
 
 ## API mode
 
-If you want a simple upload-and-query API, run the server:
+Run the server:
 
 ```bash
 rag-graph-api
 ```
 
-Then open the built-in docs page in your browser:
+Open the docs:
 
-```bash
+```
 http://localhost:8000/docs
 ```
 
-Use `POST /upload` to choose a PDF file. The upload body is `multipart/form-data` with a `file` field. Then use `POST /query` with JSON like:
+### Auth flow
+
+1. **Sign up** — `POST /auth/signup` with `{"email": "...", "password": "..."}`
+2. **Log in** — `POST /auth/login` with form fields `username` (your email) and `password`
+3. Click **Authorize** in Swagger and paste the returned token
+4. All other endpoints now require a valid Bearer token
+
+### Usage
+
+Create a new session:
+
+```
+GET /session
+```
+
+Upload a PDF:
+
+```
+POST /upload  (multipart/form-data, file field)
+```
+
+Query with a session:
 
 ```json
-{"question":"What does this PDF say?"}
+{"question": "What does this PDF say?", "session_id": "<id from /session>"}
 ```
 
-If you prefer PowerShell for querying:
-
-```powershell
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/query `
-  -ContentType "application/json" `
-  -Body (@{ question = "What does this PDF say?" } | ConvertTo-Json)
-```
-
-Uploading a new PDF replaces the active document set for queries.
+Query history is persisted per session in PostgreSQL.
 
 ## Graph shape
 
-The LangGraph workflow is intentionally small:
+```
+START -> router -> retrieve -> rag_generate -> END
+               -> general_generate --------> END
+```
 
-`START -> retrieve -> generate -> END`
-
-That makes it easy to extend later with query rewriting, grading, memory, or tool use.
+The router node decides whether to use RAG (PDF context) or general knowledge based on the user's message.
