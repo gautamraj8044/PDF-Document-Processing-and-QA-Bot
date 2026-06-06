@@ -99,4 +99,6 @@ START -> router -> retrieve -> rag_generate -> END
                -> general_generate --------> END
 ```
 
-The router node decides whether to use RAG (PDF context) or general knowledge based on the user's message.
+The router node decides whether to use RAG (PDF context) or general knowledge based on the user message.
+
+
