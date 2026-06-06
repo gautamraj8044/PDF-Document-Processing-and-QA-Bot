@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1)
+    session_id: str
 
 
 class HealthResponse(BaseModel):
@@ -31,6 +32,20 @@ class QueryResponse(BaseModel):
     document_count: int
     sources: list[SourceSnippet]
 
-class QueryRequest(BaseModel):
-    question: str = Field(min_length=1)
-    session_id: str = Field(default="default")  # add this line
+# Add these to existing schemas.py
+
+class SignupRequest(BaseModel):
+    email: str = Field(min_length=5)
+    password: str = Field(min_length=8)
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    email: str
+
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+
