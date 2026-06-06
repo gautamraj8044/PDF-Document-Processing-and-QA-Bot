@@ -79,3 +79,12 @@ def resolve_qdrant_collection_name(explicit_collection_name: str | None = None) 
         return collection_name.strip()
 
     return DEFAULT_QDRANT_COLLECTION_NAME
+
+
+DEFAULT_POSTGRES_URL = "postgresql://user:password@localhost:5432/ragdb"
+
+def resolve_postgres_url(explicit_url: str | None = None) -> str | None:
+    if explicit_url and explicit_url.strip():
+        return explicit_url.strip()
+    url = os.getenv("POSTGRES_URL")
+    return url.strip() if url and url.strip() else None

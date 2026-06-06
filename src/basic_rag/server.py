@@ -4,8 +4,11 @@ import argparse
 import os
 from threading import RLock
 
+from langchain_core.messages import AIMessage, HumanMessage
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from langgraph.checkpoint.postgres import PostgresSaver
+from .config import resolve_postgres_url
 
 from .config import (
     DEFAULT_API_HOST,
@@ -46,6 +49,9 @@ class RagRuntime:
         self._qdrant_url = resolve_qdrant_url(qdrant_url)
         self._qdrant_api_key = resolve_qdrant_api_key(qdrant_api_key)
         self._qdrant_collection_name = resolve_qdrant_collection_name(qdrant_collection_name)
+        self._postgres_url = resolve_postgres_url()
+        self._checkpointer: PostgresSaver | None = None
+        self._init_checkpointer()
         if not self._qdrant_url:
             raise ValueError(
                 "QDRANT_URL is missing. Set it in .env or pass it to RagRuntime."
@@ -53,6 +59,8 @@ class RagRuntime:
         self._graph = None
         self._uploaded_file = ""
         self._document_count = 0
+        self._graph = self._build_general_graph()
+
 
     @property
     def active_source(self) -> str:
@@ -75,6 +83,8 @@ class RagRuntime:
             qdrant_url=self._qdrant_url,
             qdrant_api_key=self._qdrant_api_key,
             qdrant_collection_name=self._qdrant_collection_name,
+            checkpointer=self._checkpointer,
+            has_pdf=True,  
         )
 
         with self._lock:
@@ -87,7 +97,7 @@ class RagRuntime:
             "document_count": len(documents),
         }
 
-    def query(self, question: str) -> dict[str, object]:
+    def query(self, question: str, session_id: str = "default") -> dict[str, object]:
         with self._lock:
             graph = self._graph
             uploaded_file = self._uploaded_file
@@ -96,17 +106,52 @@ class RagRuntime:
         if graph is None:
             raise RuntimeError("Upload a PDF first.")
 
-        result = graph.invoke({"question": question})
+        config = {"configurable": {"thread_id": session_id}}
+        result = graph.invoke(
+            {"messages": [HumanMessage(content=question)]},
+            config=config,
+        )
+
+        # Last message in history is the AI response
+        answer = ""
+        for msg in reversed(result["messages"]):
+            if isinstance(msg, AIMessage):
+                answer = msg.content
+                break
+
         return {
-            "answer": result.get("answer", ""),
+            "answer": answer,
             "retrieved_docs": result.get("retrieved_docs", []),
             "file_name": uploaded_file,
             "document_count": document_count,
         }
+    def _init_checkpointer(self) -> None:
+        if not self._postgres_url:
+            return
+        try:
+            from langgraph.checkpoint.postgres import PostgresSaver
+            import psycopg
+
+            conn = psycopg.connect(self._postgres_url, autocommit=True)
+            self._checkpointer = PostgresSaver(conn)
+            self._checkpointer.setup()
+        except Exception as exc:
+            print(f"Warning: Could not connect to Postgres for checkpointing: {exc}")
+            self._checkpointer = None
+
+    def _build_general_graph(self):
+        """Stateless general-knowledge graph used before any PDF is uploaded."""
+        from .graph import build_rag_graph
+        return build_rag_graph(
+            google_api_key=self._google_api_key,
+            model_name=self._model_name,
+            checkpointer=self._checkpointer,
+            has_pdf=False,
+        )
 
 
 def create_app(runtime: RagRuntime) -> FastAPI:
-    app = FastAPI(title="Basic RAG PDF API")
+    app = FastAPI(title="Gemini RAG Graph")
     app.state.rag_runtime = runtime
 
     @app.get("/health", response_model=HealthResponse)
@@ -135,14 +180,35 @@ def create_app(runtime: RagRuntime) -> FastAPI:
 
         return UploadResponse(status="ok", **result)
 
+
+    @app.get("/history/{session_id}")
+    def get_history(session_id: str) -> dict:
+        """Return full conversation history for a session."""
+        if runtime._checkpointer is None:
+            raise HTTPException(status_code=503, detail="Checkpointer not configured.")
+
+        config = {"configurable": {"thread_id": session_id}}
+        state = runtime._graph.get_state(config)
+
+        if not state or not state.values:
+            raise HTTPException(status_code=404, detail="Session not found.")
+
+        messages = []
+        for msg in state.values.get("messages", []):
+            messages.append({
+                "role": "human" if isinstance(msg, HumanMessage) else "ai",
+                "content": msg.content,
+            })
+
+        return {"session_id": session_id, "message_count": len(messages), "messages": messages}
+
     @app.post("/query", response_model=QueryResponse)
     def query(request: QueryRequest) -> QueryResponse:
         question = request.question.strip()
         if not question:
             raise HTTPException(status_code=400, detail="Question cannot be empty.")
-
         try:
-            result = runtime.query(question)
+            result = runtime.query(question, session_id=request.session_id)  # pass session_id
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # pragma: no cover - surfaced as HTTP error

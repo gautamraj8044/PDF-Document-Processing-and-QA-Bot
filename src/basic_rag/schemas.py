@@ -30,3 +30,7 @@ class QueryResponse(BaseModel):
     file_name: str
     document_count: int
     sources: list[SourceSnippet]
+
+class QueryRequest(BaseModel):
+    question: str = Field(min_length=1)
+    session_id: str = Field(default="default")  # add this line
