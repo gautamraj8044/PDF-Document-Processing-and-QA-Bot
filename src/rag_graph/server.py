@@ -1,34 +1,39 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from threading import RLock
-
-from langchain_core.messages import AIMessage, HumanMessage
-import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile, Depends
-from langgraph.checkpoint.postgres import PostgresSaver
-from .config import resolve_postgres_url
-from fastapi.security import OAuth2PasswordRequestForm
 from typing import Annotated
-from .auth import create_access_token, get_current_user, hash_password, verify_password
-from .user_store import UserStore
-from .schemas import LoginResponse, SignupRequest, UserResponse
 
+import uvicorn
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.security import OAuth2PasswordRequestForm
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
+
+from .auth import create_access_token, get_current_user, hash_password, verify_password
 from .config import (
     DEFAULT_API_HOST,
     DEFAULT_API_PORT,
     DEFAULT_CHAT_MODEL,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_TOP_K,
+    DEFAULT_DATABASE_URL,
+    resolve_database_url,
     resolve_google_api_key,
     resolve_qdrant_api_key,
     resolve_qdrant_collection_name,
     resolve_qdrant_url,
 )
 from .graph import build_rag_graph
-from .knowledge_base import documents_from_pdf_bytes
-from .schemas import HealthResponse, QueryRequest, QueryResponse, SourceSnippet, UploadResponse
+from .knowledge_base import build_vector_store_from_documents, documents_from_pdf_bytes
+from .schemas import HealthResponse, LoginResponse, QueryRequest, QueryResponse, SignupRequest, SourceSnippet, UploadResponse, UserResponse
+from .user_store import UserStore
+
+
+logger = logging.getLogger(__name__)
 
 
 class RagRuntime:
@@ -42,6 +47,7 @@ class RagRuntime:
         qdrant_url: str | None = None,
         qdrant_api_key: str | None = None,
         qdrant_collection_name: str | None = None,
+        database_url: str | None = None,
     ) -> None:
         self._lock = RLock()
         self._model_name = model_name or os.getenv("GEMINI_MODEL", DEFAULT_CHAT_MODEL)
@@ -54,23 +60,16 @@ class RagRuntime:
         self._qdrant_url = resolve_qdrant_url(qdrant_url)
         self._qdrant_api_key = resolve_qdrant_api_key(qdrant_api_key)
         self._qdrant_collection_name = resolve_qdrant_collection_name(qdrant_collection_name)
-        self._postgres_url = resolve_postgres_url()
-        self._checkpointer: PostgresSaver | None = None
-        self._user_store: UserStore | None = None
-        self._init_user_store()
-        self._init_checkpointer()
-        if not self._qdrant_url:
-            raise ValueError(
-                "QDRANT_URL is missing. Set it in .env or pass it to RagRuntime."
-            )
-        self._graph = None
-        self._uploaded_file = ""
-        self._document_count = 0
+        self._database_url = resolve_database_url(database_url)
+        self._checkpointer = self._init_checkpointer()
+        self._user_store = self._init_user_store()
         self._graph = self._build_general_graph()
-
+        self._document_store = None
+        self._uploaded_file: str | None = None
+        self._document_count = 0
 
     @property
-    def active_source(self) -> str:
+    def active_source(self) -> str | None:
         with self._lock:
             return self._uploaded_file
 
@@ -81,21 +80,27 @@ class RagRuntime:
 
     def upload_pdf(self, filename: str, pdf_bytes: bytes) -> dict[str, object]:
         documents = documents_from_pdf_bytes(pdf_bytes, filename)
+        vector_store = build_vector_store_from_documents(
+            documents,
+            qdrant_url=self._qdrant_url,
+            qdrant_api_key=self._qdrant_api_key,
+            collection_name=self._qdrant_collection_name,
+            embedding_model=self._embedding_model,
+            google_api_key=self._google_api_key,
+        )
         graph = build_rag_graph(
-            documents=documents,
+            vector_store=vector_store,
             model_name=self._model_name,
             embedding_model=self._embedding_model,
             top_k=self._top_k,
             google_api_key=self._google_api_key,
-            qdrant_url=self._qdrant_url,
-            qdrant_api_key=self._qdrant_api_key,
-            qdrant_collection_name=self._qdrant_collection_name,
             checkpointer=self._checkpointer,
-            has_pdf=True,  
+            has_pdf=True,
         )
 
         with self._lock:
             self._graph = graph
+            self._document_store = vector_store
             self._uploaded_file = filename
             self._document_count = len(documents)
 
@@ -105,25 +110,27 @@ class RagRuntime:
         }
 
     def query(self, question: str, session_id: str = "default") -> dict[str, object]:
+        question = question.strip()
+        if not question:
+            raise ValueError("Question cannot be empty.")
+
         with self._lock:
             graph = self._graph
             uploaded_file = self._uploaded_file
             document_count = self._document_count
 
         if graph is None:
-            raise RuntimeError("Upload a PDF first.")
+            raise RuntimeError("The runtime is not ready yet.")
 
-        config = {"configurable": {"thread_id": session_id}}
         result = graph.invoke(
             {"messages": [HumanMessage(content=question)]},
-            config=config,
+            config={"configurable": {"thread_id": session_id}},
         )
 
-        # Last message in history is the AI response
         answer = ""
         for msg in reversed(result["messages"]):
             if isinstance(msg, AIMessage):
-                answer = msg.content
+                answer = str(msg.content)
                 break
 
         return {
@@ -132,70 +139,89 @@ class RagRuntime:
             "file_name": uploaded_file,
             "document_count": document_count,
         }
-    def _init_checkpointer(self) -> None:
-        if not self._postgres_url:
-            return
+
+    def create_session_id(self, user_id: str) -> str:
+        import uuid
+
+        return f"{user_id}:{uuid.uuid4()}"
+
+    @staticmethod
+    def session_belongs_to_user(session_id: str, user_id: str) -> bool:
+        owner, _, _ = session_id.partition(":")
+        return owner == user_id
+
+    def _init_checkpointer(self):
+        if not self._database_url.startswith("postgresql"):
+            return MemorySaver()
+
         try:
-            from langgraph.checkpoint.postgres import PostgresSaver
             import psycopg
 
-            conn = psycopg.connect(self._postgres_url, autocommit=True)
-            self._checkpointer = PostgresSaver(conn)
-            self._checkpointer.setup()
+            conn = psycopg.connect(self._database_url, autocommit=True)
+            checkpointer = PostgresSaver(conn)
+            checkpointer.setup()
+            logger.info("Postgres checkpointer ready.")
+            return checkpointer
         except Exception as exc:
-            print(f"Warning: Could not connect to Postgres for checkpointing: {exc}")
-            self._checkpointer = None
+            logger.warning("Falling back to in-memory history: %s", exc)
+            return MemorySaver()
 
     def _build_general_graph(self):
-        """Stateless general-knowledge graph used before any PDF is uploaded."""
-        from .graph import build_rag_graph
         return build_rag_graph(
             google_api_key=self._google_api_key,
             model_name=self._model_name,
             checkpointer=self._checkpointer,
             has_pdf=False,
         )
-    
-    def _init_user_store(self) -> None:
-        if not self._postgres_url:
-            print("UserStore: disabled (no POSTGRES_URL set)")
-            return
+
+    def _init_user_store(self) -> UserStore:
         try:
-            self._user_store = UserStore(self._postgres_url)
-            self._user_store.setup()
-            print("✓ UserStore: ready")
+            store = UserStore(self._database_url)
+            store.setup()
+            return store
         except Exception as exc:
-            print(f"✗ UserStore: failed — {exc}")
-            self._user_store = None
+            if self._database_url != DEFAULT_DATABASE_URL:
+                logger.warning(
+                    "User store init failed for %s, falling back to SQLite: %s",
+                    self._database_url,
+                    exc,
+                )
+                try:
+                    store = UserStore(DEFAULT_DATABASE_URL)
+                    store.setup()
+                    self._database_url = DEFAULT_DATABASE_URL
+                    return store
+                except Exception as fallback_exc:
+                    raise RuntimeError(
+                        f"Unable to initialize the user store: {fallback_exc}"
+                    ) from fallback_exc
+
+            raise RuntimeError(f"Unable to initialize the user store: {exc}") from exc
 
 
 def create_app(runtime: RagRuntime) -> FastAPI:
     app = FastAPI(
-        title="Gemini RAG Graph",
-        description="A LangGraph-powered RAG API with Gemini, Qdrant, PostgreSQL checkpointing, and JWT authentication.",
+        title="Basic RAG",
+        description=(
+            "A LangGraph-based RAG API with Gemini, Qdrant, JWT authentication, "
+            "and optional Postgres-backed persistence."
+        ),
         version="0.1.0",
     )
     app.state.rag_runtime = runtime
-
-    # ── Auth routes ───────────────────────────────────────────────────────────
 
     @app.post(
         "/auth/signup",
         response_model=UserResponse,
         tags=["Auth"],
         summary="Create a new account",
-        responses={400: {"description": "Email already registered"}, 503: {"description": "User store unavailable"}},
+        responses={400: {"description": "Email already registered"}},
     )
     def signup(request: SignupRequest) -> UserResponse:
-        if runtime._user_store is None:
-            raise HTTPException(status_code=503, detail="User store not available.")
-        try:
-            user = runtime._user_store.create_user(
-                email=request.email,
-                hashed_password=hash_password(request.password),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+        user = runtime._user_store.create_user(
+            email=request.email,
+            hashed_password=hash_password(request.password),
+        )
         return UserResponse(id=user.id, email=user.email)
 
     @app.post(
@@ -203,13 +229,10 @@ def create_app(runtime: RagRuntime) -> FastAPI:
         response_model=LoginResponse,
         tags=["Auth"],
         summary="Login with email and password",
-        description="Accepts OAuth2 form with `username` (your email) and `password`. Returns a JWT access token.",
-        responses={401: {"description": "Invalid credentials"}, 503: {"description": "User store unavailable"}},
+        description="Uses an OAuth2 password form. The username field should contain the email address.",
+        responses={401: {"description": "Invalid credentials"}},
     )
     def login(form: OAuth2PasswordRequestForm = Depends()) -> LoginResponse:
-        if runtime._user_store is None:
-            raise HTTPException(status_code=503, detail="User store not available.")
-
         user = runtime._user_store.get_by_email(form.username)
         if not user or not verify_password(form.password, user.hashed_password):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
@@ -221,12 +244,10 @@ def create_app(runtime: RagRuntime) -> FastAPI:
         "/auth/me",
         response_model=UserResponse,
         tags=["Auth"],
-        summary="Get current user profile",
+        summary="Get the current user",
     )
     def me(current_user: Annotated[dict, Depends(get_current_user)]) -> UserResponse:
         return UserResponse(id=current_user["sub"], email=current_user["email"])
-
-    # ── Document routes ───────────────────────────────────────────────────────
 
     @app.get(
         "/health",
@@ -246,59 +267,71 @@ def create_app(runtime: RagRuntime) -> FastAPI:
         response_model=UploadResponse,
         tags=["Documents"],
         summary="Upload a PDF for querying",
-        responses={400: {"description": "Invalid or non-PDF file"}},
+        responses={
+            400: {"description": "Invalid or non-PDF file"},
+            503: {"description": "Vector backend unavailable"},
+        },
     )
     async def upload(
         file: UploadFile = File(...),
-        current_user: Annotated[dict, Depends(get_current_user)] = None,
+        _current_user: dict = Depends(get_current_user),
     ) -> UploadResponse:
         filename = file.filename or "uploaded.pdf"
         if not filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Please upload a PDF file.")
+
         pdf_bytes = await file.read()
         try:
             result = runtime.upload_pdf(filename, pdf_bytes)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return UploadResponse(status="ok", **result)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    # ── Conversation routes ───────────────────────────────────────────────────
+        return UploadResponse(status="ok", **result)
 
     @app.get(
         "/session",
         tags=["Conversation"],
         summary="Create a new conversation session",
-        description="Returns a session ID scoped to the authenticated user. Use it in `/query` to maintain conversation history.",
+        description="Returns a session ID scoped to the authenticated user. Use it in /query to maintain conversation history.",
     )
-    def new_session(
-        current_user: Annotated[dict, Depends(get_current_user)]
-    ) -> dict:
-        import uuid
-        return {"session_id": f"{current_user['sub']}:{uuid.uuid4()}"}
+    def new_session(current_user: Annotated[dict, Depends(get_current_user)]) -> dict:
+        return {"session_id": runtime.create_session_id(current_user["sub"])}
 
     @app.post(
         "/query",
         response_model=QueryResponse,
         tags=["Conversation"],
-        summary="Ask a question against the uploaded PDF",
-        description="Accepts a question and optional session_id. If no session_id is provided, one is auto-created and returned. The router decides whether to answer from the PDF (RAG) or general knowledge.",
-        responses={400: {"description": "No PDF uploaded or invalid question"}, 403: {"description": "Session does not belong to user"}},
+        summary="Ask a question against the active document or chat normally",
+        description=(
+            "Accepts a question and optional session_id. If no session_id is provided, one is auto-created and returned. "
+            "If a PDF has been uploaded, the router decides whether the answer should use the document or general knowledge."
+        ),
+        responses={
+            400: {"description": "Invalid question"},
+            403: {"description": "Session does not belong to user"},
+            503: {"description": "Backend unavailable"},
+        },
     )
     def query(
         request: QueryRequest,
         current_user: Annotated[dict, Depends(get_current_user)],
     ) -> QueryResponse:
-        import uuid
         question = request.question.strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-        session_id = request.session_id or f"{current_user['sub']}:{uuid.uuid4()}"
-        if not session_id.startswith(current_user["sub"]):
+        session_id = request.session_id or runtime.create_session_id(current_user["sub"])
+        if not runtime.session_belongs_to_user(session_id, current_user["sub"]):
             raise HTTPException(status_code=403, detail="Session does not belong to you.")
 
         try:
             result = runtime.query(question, session_id=session_id)
-        except RuntimeError as exc:
+        except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         return QueryResponse(
             answer=result["answer"],
@@ -312,30 +345,39 @@ def create_app(runtime: RagRuntime) -> FastAPI:
         "/history/{session_id}",
         tags=["Conversation"],
         summary="View conversation history for a session",
-        responses={403: {"description": "Session does not belong to user"}, 404: {"description": "Session not found"}, 503: {"description": "Checkpointer not configured"}},
+        responses={
+            403: {"description": "Session does not belong to user"},
+            404: {"description": "Session not found"},
+        },
     )
     def get_history(
         session_id: str,
         current_user: Annotated[dict, Depends(get_current_user)],
     ) -> dict:
-        if not session_id.startswith(current_user["sub"]):
+        if not runtime.session_belongs_to_user(session_id, current_user["sub"]):
             raise HTTPException(status_code=403, detail="Session does not belong to you.")
-        if runtime._checkpointer is None:
-            raise HTTPException(status_code=503, detail="Checkpointer not configured.")
-        from langchain_core.messages import HumanMessage
-        config = {"configurable": {"thread_id": session_id}}
-        state = runtime._graph.get_state(config)
+
+        state = runtime._graph.get_state({"configurable": {"thread_id": session_id}})
         if not state or not state.values:
             raise HTTPException(status_code=404, detail="Session not found.")
+
         messages = []
         for msg in state.values.get("messages", []):
-            messages.append({
-                "role": "human" if isinstance(msg, HumanMessage) else "ai",
-                "content": msg.content,
-            })
-        return {"session_id": session_id, "message_count": len(messages), "messages": messages}
+            messages.append(
+                {
+                    "role": "human" if isinstance(msg, HumanMessage) else "ai",
+                    "content": msg.content,
+                }
+            )
+
+        return {
+            "session_id": session_id,
+            "message_count": len(messages),
+            "messages": messages,
+        }
 
     return app
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Basic RAG PDF API server.")
@@ -381,6 +423,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=resolve_qdrant_collection_name(),
         help="Collection name used to store uploaded PDF chunks.",
     )
+    parser.add_argument(
+        "--database-url",
+        default=resolve_database_url(),
+        help="Database URL used for authentication data and, when PostgreSQL is selected, chat history.",
+    )
     return parser
 
 
@@ -392,10 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not resolve_google_api_key():
-        parser.error("GEMINI_API_KEY or GOOGLE_API_KEY is not set. Copy .env.example to .env and add your key.")
-    if not args.qdrant_url:
         parser.error(
-            "QDRANT_URL is not set. Copy .env.example to .env and add your Qdrant service URL."
+            "GEMINI_API_KEY or GOOGLE_API_KEY is not set. Copy .env.example to .env and add your key."
         )
 
     runtime = RagRuntime(
@@ -405,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         qdrant_url=args.qdrant_url,
         qdrant_api_key=args.qdrant_api_key,
         qdrant_collection_name=args.qdrant_collection_name,
+        database_url=args.database_url,
     )
     app = create_app(runtime)
 

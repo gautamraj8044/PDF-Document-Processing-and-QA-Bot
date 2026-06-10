@@ -3,13 +3,14 @@ from __future__ import annotations
 import os
 from urllib.parse import urlparse, urlunparse
 
-DEFAULT_CHAT_MODEL = "gemini-1.5-pro"
-DEFAULT_EMBEDDING_MODEL = "models/embedding-001"
+DEFAULT_CHAT_MODEL = "gemini-3-flash-preview"
+DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"
 DEFAULT_TOP_K = 3
 DEFAULT_API_HOST = "0.0.0.0"
 DEFAULT_API_PORT = 8000
-DEFAULT_QDRANT_URL = "https://2468b96d-f0ae--a440-74b23e10aa08.us-east-1-1.aws.cloud.qdrant.io:6333"
+DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_QDRANT_COLLECTION_NAME = "rag_graph_documents"
+DEFAULT_DATABASE_URL = "sqlite:///./data/rag.db"
 
 
 def _normalize_qdrant_url(raw_url: str) -> str:
@@ -45,7 +46,7 @@ def resolve_google_api_key(explicit_key: str | None = None) -> str | None:
     return api_key.strip() if api_key and api_key.strip() else None
 
 
-def resolve_qdrant_url(explicit_url: str | None = None) -> str | None:
+def resolve_qdrant_url(explicit_url: str | None = None) -> str:
     """Return the Qdrant service URL."""
 
     if explicit_url and explicit_url.strip():
@@ -81,10 +82,25 @@ def resolve_qdrant_collection_name(explicit_collection_name: str | None = None) 
     return DEFAULT_QDRANT_COLLECTION_NAME
 
 
-DEFAULT_POSTGRES_URL = "postgresql://user:password@localhost:5432/ragdb"
+def resolve_database_url(explicit_url: str | None = None) -> str:
+    """Return the database URL used for authentication data.
 
-def resolve_postgres_url(explicit_url: str | None = None) -> str | None:
+    `DATABASE_URL` is the primary setting. `POSTGRES_URL` remains a legacy
+    fallback so older environments keep working.
+    """
+
     if explicit_url and explicit_url.strip():
         return explicit_url.strip()
-    url = os.getenv("POSTGRES_URL")
-    return url.strip() if url and url.strip() else None
+
+    for env_name in ("DATABASE_URL", "POSTGRES_URL"):
+        url = os.getenv(env_name)
+        if url and url.strip():
+            return url.strip()
+
+    return DEFAULT_DATABASE_URL
+
+
+def resolve_postgres_url(explicit_url: str | None = None) -> str:
+    """Backward-compatible alias for :func:`resolve_database_url`."""
+
+    return resolve_database_url(explicit_url)

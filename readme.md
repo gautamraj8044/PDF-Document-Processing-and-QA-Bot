@@ -1,89 +1,88 @@
-# Gemini RAG Graph
+# Basic RAG
 
-A LangGraph-powered RAG API with Gemini embeddings, Qdrant vector storage, PostgreSQL checkpointing, and JWT authentication.
+A practical retrieval-augmented generation system built with FastAPI, LangGraph, Gemini, and Qdrant.
 
-## Stack
+## What It Does
 
-- **LLM** — Google Gemini (configurable model)
-- **Orchestration** — LangGraph state machine with routing
-- **Vector store** — Qdrant (cloud or local)
-- **Conversation memory** — PostgreSQL via `langgraph-checkpoint-postgres`
-- **Auth** — JWT with bcrypt, user store in PostgreSQL
-- **API** — FastAPI with auto-generated Swagger docs
+- Upload a PDF, extract its text, split it into chunks, and store embeddings in Qdrant.
+- Route each question either to document-grounded RAG or to general chat.
+- Authenticate users with JWT.
+- Track conversation sessions and history.
+- Use local-first defaults so the project runs without hidden infrastructure.
 
-## Quick start
+## Architecture
 
-```bash
-pip install -e .
-copy .env.example .env
-```
+- FastAPI for the HTTP API
+- LangGraph for the routing and answer flow
+- Gemini for chat and embeddings
+- Qdrant for vector search
+- SQLAlchemy for user storage
 
-Edit `.env` with your Gemini API key and Qdrant credentials.
+## Setup
 
-### Docker (includes PostgreSQL)
+1. Install dependencies:
 
-```bash
-docker compose up --build
-```
+   ```bash
+   pip install -e .
+   ```
 
-## Usage
+2. Create your environment file:
 
-### 1. Start the server
+   ```bash
+   copy .env.example .env
+   ```
 
-```bash
-rag-graph-api
-```
+3. Add your `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
 
-Open http://localhost:8000/docs
+4. Start Qdrant and the API:
 
-### 2. Auth flow
+   ```bash
+   docker compose up --build
+   ```
 
-| Step | Endpoint | Body |
-|---|---|---|
-| Sign up | `POST /auth/signup` | `{"email": "...", "password": "..."}` |
-| Log in | `POST /auth/login` | Form: `username` (email), `password` |
-| Get profile | `GET /auth/me` | Bearer token |
+   If you want to run the API without Docker, start Qdrant separately and then run:
 
-After login, paste the `access_token` in Swagger's **Authorize** button.
+   ```bash
+   rag-graph-api
+   ```
 
-### 3. Query flow
+5. Open the API docs:
 
-```
-GET /session              → get a session_id
-POST /upload (PDF file)   → upload a document
-POST /query               → ask a question with session_id
-GET /history/{session_id} → view conversation history
-```
+   ```text
+   http://localhost:8000/docs
+   ```
 
-Query request:
+If you set `POSTGRES_URL`, the app uses PostgreSQL for auth and conversation history. Otherwise it uses SQLite for auth and in-memory checkpoints for a simpler local setup.
+
+`DATABASE_URL` is the primary setting for auth storage. `POSTGRES_URL` is kept as a legacy fallback, but `DATABASE_URL` wins if both are present.
+
+## API Flow
+
+1. `POST /auth/signup`
+2. `POST /auth/login`
+3. `POST /upload`
+4. `GET /session`
+5. `POST /query`
+6. `GET /history/{session_id}`
+
+`/query` also works before a PDF is uploaded. In that case the router falls back to general chat.
+
+## Example Query
 
 ```json
-{
-  "question": "What does this PDF say?",
-  "session_id": "<uuid>:<uuid>"
-}
+{"question": "What does the PDF say about the main goal?"}
 ```
 
-## Environment
+PowerShell example:
 
-Key variables in `.env`:
-
-| Variable | Default | Description |
-|---|---|---|
-| `GEMINI_API_KEY` | — | Google Gemini API key |
-| `GEMINI_MODEL` | `gemini-1.5-pro` | Chat model |
-| `GEMINI_EMBEDDING_MODEL` | `models/embedding-001` | Embedding model |
-| `QDRANT_URL` | (built-in) | Qdrant cluster URL |
-| `QDRANT_COLLECTION_NAME` | `rag_graph_documents` | Collection for document chunks |
-| `POSTGRES_URL` | — | PostgreSQL connection string |
-| `JWT_SECRET_KEY` | `change-me-in-production` | Token signing secret |
-| `RAG_GRAPH_TOP_K` | `3` | Retrieved document chunks per query |
-
-## Graph
-
-```
-START → router ──→ retrieve ──→ rag_generate ──→ END
-               └─→ general_generate ──────────→ END
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/query `
+  -ContentType "application/json" `
+  -Body (@{ question = "What does the PDF say about the main goal?" } | ConvertTo-Json)
 ```
 
-The **router** decides whether the question relates to the uploaded PDF (RAG path) or is general conversation. History is persisted via PostgreSQL checkpointing.
+## Resume Bullets
+
+- Built a LangGraph-based RAG API that routes between document-aware answers and general knowledge responses.
+- Implemented PDF ingestion, chunking, Gemini embeddings, Qdrant retrieval, JWT auth, and session history.
+- Designed local-first defaults with optional PostgreSQL persistence for easy development and deployment.

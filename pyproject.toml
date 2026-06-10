@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gemini-rag-graph"
 version = "0.1.0"
-description = "A minimal Gemini-powered RAG example built with LangGraph and Qdrant."
+description = "A practical Gemini-powered RAG system built with LangGraph and Qdrant."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -23,9 +23,12 @@ dependencies = [
   "passlib[bcrypt]>=1.7.4",
   "bcrypt==4.0.1",
   "python-jose[cryptography]>=3.3.0",
-  "python-multipart>=0.0.9",
   "sqlalchemy>=2.0",
+  "psycopg2-binary>=2.9.0",
 ]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
 
 [project.scripts]
 rag-graph = "rag_graph.cli:main"

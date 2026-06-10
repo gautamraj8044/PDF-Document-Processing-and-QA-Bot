@@ -121,7 +121,7 @@ class QdrantDocumentStore:
     def similarity_search(self, query: str, k: int) -> list[Document]:
         """Return the most similar chunks for a query."""
 
-        if not query.strip():
+        if k <= 0 or not query.strip():
             return []
 
         query_vector = self.embeddings.embed_query(query)
@@ -242,29 +242,7 @@ class QdrantDocumentStore:
                     "Use a different QDRANT_COLLECTION_NAME or recreate the collection with matching embeddings."
                 )
 
-        self._ensure_payload_index()  # always ensure index exists
-
-
-
-    # def _ensure_collection(self, *, vector_size: int) -> None:
-    #     existing = self._request_json(
-    #         "GET",
-    #         f"/collections/{quote(self.collection_name, safe='')}",
-    #         ignore_not_found=True,
-    #     )
-    #     if not existing:
-    #         self._create_collection(vector_size=vector_size)
-    #         return
-
-    #     existing_size = _extract_vector_size(existing)
-    #     if existing_size is None:
-    #         return
-
-    #     if existing_size != vector_size:
-    #         raise RuntimeError(
-    #             "The Qdrant collection already exists with a different vector size. "
-    #             "Use a different QDRANT_COLLECTION_NAME or recreate the collection with matching embeddings."
-    #         )
+        self._ensure_payload_index()
 
     def _request_json(
         self,

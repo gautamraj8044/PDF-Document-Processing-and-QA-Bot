@@ -10,7 +10,7 @@ class QueryRequest(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    file_name: str
+    file_name: str | None = None
     document_count: int
 
 
@@ -29,11 +29,9 @@ class SourceSnippet(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     session_id: str | None = None
-    file_name: str
+    file_name: str | None = None
     document_count: int
     sources: list[SourceSnippet]
-
-# Add these to existing schemas.py
 
 class SignupRequest(BaseModel):
     email: str = Field(min_length=5)
