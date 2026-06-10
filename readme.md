@@ -40,7 +40,7 @@ A practical retrieval-augmented generation system built with FastAPI, LangGraph,
    docker compose up --build
    ```
 
-   If you want to run the API without Docker, start Qdrant separately and then run:
+   Docker starts a local Qdrant instance plus the API. If you want to run the API without Docker, start Qdrant separately and then run:
 
    ```bash
    rag-graph-api
@@ -52,9 +52,9 @@ A practical retrieval-augmented generation system built with FastAPI, LangGraph,
    http://localhost:8000/docs
    ```
 
-If you set `POSTGRES_URL`, the app uses PostgreSQL for auth and conversation history. Otherwise it uses SQLite for auth and in-memory checkpoints for a simpler local setup.
+`DATABASE_URL` is the primary setting for auth storage and history. `POSTGRES_URL` is kept as a legacy fallback, but `DATABASE_URL` wins if both are present.
 
-`DATABASE_URL` is the primary setting for auth storage. `POSTGRES_URL` is kept as a legacy fallback, but `DATABASE_URL` wins if both are present.
+If the configured database is unreachable at startup, the server falls back to local SQLite for auth so the API can still boot in a development environment. Conversation history uses an in-memory checkpoint in that case.
 
 ## API Flow
 
@@ -66,6 +66,13 @@ If you set `POSTGRES_URL`, the app uses PostgreSQL for auth and conversation his
 6. `GET /history/{session_id}`
 
 `/query` also works before a PDF is uploaded. In that case the router falls back to general chat.
+
+## Configuration Notes
+
+- `QDRANT_URL` defaults to `http://localhost:6333`.
+- `DATABASE_URL` should point to a reachable database if you want persistent auth data.
+- `POSTGRES_URL` is supported for older environments, but it should not be the primary setting in new setups.
+- `JWT_SECRET_KEY` should be changed before any real deployment.
 
 ## Example Query
 
